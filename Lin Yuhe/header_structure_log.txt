@@ -1,0 +1,45 @@
+start ping  10.0.0.2
+--- source routing header structure ---
+###[ Ethernet ]###
+  dst       = 22:22:22:22:22:22
+  src       = 11:11:11:11:11:11
+  type      = n_802_1Q
+###[ 802.1Q ]###
+     prio      = 0
+     id        = 0
+     vlan      = 3
+     type      = n_802_1Q
+###[ 802.1Q ]###
+        prio      = 0
+        id        = 0
+        vlan      = 2
+        type      = n_802_1Q
+###[ 802.1Q ]###
+           prio      = 0
+           id        = 0
+           vlan      = 1
+           type      = IPv4
+###[ IP ]###
+              version   = 4
+              ihl       = None
+              tos       = 0x0
+              len       = None
+              id        = 1
+              flags     =
+              frag      = 0
+              ttl       = 64
+              proto     = icmp
+              chksum    = None
+              src       = 10.0.0.1
+              dst       = 10.0.0.2
+              \options   \
+###[ ICMP ]###
+                 type      = echo-request
+                 code      = 0
+                 chksum    = None
+                 id        = 0x0
+                 seq       = 0x0
+                 unused    = ''
+
+.
+Sent 1 packets.
