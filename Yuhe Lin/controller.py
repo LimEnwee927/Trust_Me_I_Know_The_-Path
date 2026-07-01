@@ -75,7 +75,8 @@ class Switch13(app_manager.RyuApp):
             
             # set loop time
             hub.sleep(5)
-
+            
+    # Controller send msg to h1 and h2
     def notify_host_new_route(self, datapath, host_port, path_list):
         # OpenFlow Packet-Out 
         ofproto = datapath.ofproto
