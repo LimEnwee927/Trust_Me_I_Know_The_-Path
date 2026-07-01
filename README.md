@@ -21,7 +21,7 @@ git push
 Open Linux Terminator
 * Navigate to the project root directory:
 ```bash
-cd /home/... .../trust-me-i-know-the-path
+cd /home/... .../Trust_Me_I_Know_The_-Path
 ```
 * Start the Ryu Controller
 ```bash
