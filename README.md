@@ -25,7 +25,7 @@ cd /home/... .../Trust_Me_I_Know_The_-Path
 ```
 * Start the Ryu Controller
 ```bash
-ryu-manager --observe-links controller.py
+ryu-manager controller.py
 ```
 * Launch the Mininet Topology
 
