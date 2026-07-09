@@ -1,4 +1,4 @@
-from scapy.all import Dot1Q, IP, UDP, Ether
+from scapy.all import Dot1Q, IP, UDP, Ether, ICMP
 
 
 class PathEncoder:
@@ -13,7 +13,19 @@ class PathEncoder:
         return ports
 
     def encode(self, payload_bytes, ports, dst_ip, src_ip, dport=5000, sport=5001):
-        pkt = IP(src=src_ip, dst=dst_ip) / UDP(dport=dport, sport=sport) / payload_bytes
-        for port in reversed(ports):
-            pkt = Dot1Q(vlan=port) / pkt
-        return Ether() / pkt
+        # Construct ethertype header. 
+        # Mac addrs are not important, we can randomly choose two
+        pkt = Ether(src="11:11:11:11:11:11", dst="22:22:22:22:22:22")
+
+        # nest 802.1Q headers with vlan tag
+        for port in ports:
+            pkt = pkt / Dot1Q(vlan=port)
+        
+        # add IPv4 header and icmp payload
+        pkt = pkt / IP(src=src_ip, dst=dst_ip) / ICMP() / payload_bytes
+
+        # # Print header structure
+        # print("--- source routing header structure ---")
+        # pkt.show()
+
+        return pkt

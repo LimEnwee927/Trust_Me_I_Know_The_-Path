@@ -6,7 +6,7 @@
 
 In a bash terminal:
 ``` bash
-git clone https://gitlab.lrz.de/pcn_2026_group_2/trust-me-i-know-the-path.git
+git clone https://github.com/LimEnwee927/Trust_Me_I_Know_The_-Path.git
 ```
 * File upload
 ``` bash

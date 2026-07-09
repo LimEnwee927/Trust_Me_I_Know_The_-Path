@@ -1,101 +1,28 @@
-# Fault-Tolerant Source Routing with Mininet and Ryu
-
-This project implements a fault-tolerant source routing system using **Mininet**, **Ryu**, **OpenFlow 1.3**, and **Scapy**. The sender host encodes the forwarding path directly into packet headers using stacked VLAN tags, and the switches simply inspect the outer VLAN tag, pop it, and forward the packet on the indicated port.
-
-The system also supports **reactive rerouting**. When the primary path fails, the sender detects the failure through missed ACKs and switches traffic to a backup path.
-
-## What this project does
-
-- End-host-based source routing
-- Passive switch forwarding using OpenFlow 1.3
-- VLAN-stack path encoding
-- Failure detection using ACK timeout monitoring
-- Automatic failover to a backup path
-- Extended statistics export to CSV
-- Optional chart generation from experiment results
-
-## Project files
-
-| File | Purpose |
-|------|---------|
-| `my_topology.py` | Builds the Mininet topology |
-| `topology.py` | Stores the logical network graph and switch port mapping |
-| `ryu_controller.py` | Passive OpenFlow controller |
-| `path_encoder.py` | Encodes paths into stacked VLAN tags |
-| `sender.py` | Main sender with probes, queueing, reroute, and statistics |
-| `ack_listener.py` | Detects failure from missed ACKs |
-| `host_b.py` | Receives packets and sends ACKs |
-| `stats_utils.py` | Statistics helpers and CSV export |
-| `plot_results.py` | Generates plots from CSV files |
-| `rerouter.py` | Computes backup path after failure |
-
-## Topology
-
-The topology has two hosts and five switches:
-
-- `h1` = sender = `10.0.0.1`
-- `h2` = receiver = `10.0.0.2`
-- switches = `s1`, `s2`, `s3`, `s4`, `s5`
-
-### Paths
-
-- Primary path: `S1 -> S5 -> S4`
-- Backup path: `S1 -> S2 -> S3 -> S4`
-
-### Failure trigger
-
-To simulate the primary link failure inside Mininet:
-
-```bash
-link s5 s4 down
-```
-
-## Requirements
-
-Install the required tools on your Mininet VM or Linux machine:
-
-```bash
-pip3 install ryu scapy networkx
-sudo apt-get update
-sudo apt-get install mininet openvswitch-switch python3-matplotlib
-```
-
-If you do not want plotting support, `python3-matplotlib` is optional.
-
-## Execution order
-
-This section shows the **exact order** to run everything.
+## Run the project
 
 ### 1. Start the Ryu controller
 
-Open a terminal and run:
-
 ```bash
-ryu-manager ryu_controller.py --ofp-tcp-listen-port 6633 --verbose
+ryu-manager ryu_controller.py
 ```
 
-Keep this terminal open.
-
-### 2. Start the Mininet topology
-
-Open a second terminal and run:
+### 2. Start Mininet
 
 ```bash
 sudo python3 my_topology.py
 ```
 
-Wait until the Mininet CLI appears.
+This creates the hosts and switches, configures `h1` and `h2`, and opens the Mininet CLI. [file:1]
 
-### 3. Open host terminals from Mininet
+### 3. Open host terminals
 
-Inside the Mininet CLI:
+From the Mininet CLI:
 
 ```bash
-xterm h1
-xterm h2
+xterm h1 h2
 ```
 
-This opens one terminal for the sender host and one for the receiver host.
+This opens one terminal for `h1` and one terminal for `h2`. [web:14][web:16]
 
 ### 4. Start the receiver on `h2`
 
@@ -106,7 +33,7 @@ cd /path/to/project
 python3 host_b.py
 ```
 
-You should see that `host_b.py` is listening on port `5000`.
+`host_b.py` listens on UDP port `5000` for data packets and `6000` for probe packets, then sends ACKs back to `10.0.0.1:9999`. [file:6]
 
 ### 5. Start the sender on `h1`
 
@@ -114,255 +41,7 @@ In the `h1` xterm:
 
 ```bash
 cd /path/to/project
-python3 sender.py --iface h1-eth0 --max-packets 1000
+python3 sender.py --iface h1-eth1 --max-packets 1000
 ```
 
-The sender starts on the primary path and begins sending data and probes.
-
-### 6. Trigger the link failure
-
-Back in the Mininet CLI, after the sender has already started:
-
-```bash
-link s5 s4 down
-```
-
-The sender should detect missed ACKs and reroute traffic to the backup path.
-
-### 7. Wait for the experiment to finish
-
-When the sender finishes, it prints the final statistics and exports:
-
-- `run_summary.csv`
-- `run_timeseries.csv`
-
-### 8. Stop and clean Mininet
-
-After the run is complete:
-
-```bash
-sudo mn -c
-```
-
-This removes old Mininet state before the next experiment.
-
-## Quick run summary
-
-Use this order every time:
-
-1. Start `ryu_controller.py`
-2. Start `my_topology.py`
-3. Open `xterm h1` and `xterm h2`
-4. Run `host_b.py` on `h2`
-5. Run `sender.py` on `h1`
-6. Trigger `link s5 s4 down`
-7. Wait for CSV export
-8. Generate plots
-9. Clean Mininet with `sudo mn -c`
-
-## Generated output files
-
-After each sender run, these files are created:
-
-- `run_summary.csv`
-- `run_timeseries.csv`
-
-These include:
-
-- runtime
-- built/sent/dropped packets
-- primary and backup counts
-- ACK counters
-- probe loss rate
-- throughput
-- jitter
-- p50, p95, p99 send-time metrics
-- reroute time
-- recovery time objective
-
-## How to generate plots
-
-Only do this **after** the experiment has finished and the CSV files exist.
-
-### Run the plot script
-
-```bash
-python3 plot_results.py
-```
-
-### Expected generated images
-
-- `send_latency.png`
-- `queue_backlog.png`
-- `reroute_wait_hist.png`
-
-## If matplotlib is missing
-
-If you get this error:
-
-```text
-ModuleNotFoundError: No module named 'matplotlib'
-```
-
-install it with:
-
-```bash
-pip3 install matplotlib
-```
-
-or:
-
-```bash
-sudo apt-get install python3-matplotlib
-```
-
-## How the routing works
-
-1. The sender computes the path in advance.
-2. `path_encoder.py` converts the path into output ports.
-3. Those ports are encoded into stacked VLAN tags.
-4. Each switch pops one VLAN tag and forwards the packet accordingly.
-5. The receiver sends ACKs back to the sender.
-6. If ACKs stop arriving, the sender assumes a failure.
-7. The failed link is removed from the logical topology.
-8. A new path is computed and packets are sent on the backup path.
-
-## Important metric note
-
-### `send_time` is not end-to-end latency
-
-The `send_time` metric in `sender.py` measures only the local duration of `sendp()` on `h1`. It does **not** measure the full travel time from `h1` to `h2`.
-
-That means a path with more switches can still appear faster in `send_time`, because this metric reflects local packet injection cost rather than real network RTT.
-
-## Flow table inspection
-
-Your switches use **OpenFlow 1.3**, so plain `dpctl dump-flows` may fail.
-
-Use this instead inside the Mininet CLI:
-
-```bash
-mininet> sh sudo ovs-ofctl -O OpenFlow13 dump-flows s1
-mininet> sh sudo ovs-ofctl -O OpenFlow13 dump-flows s2
-mininet> sh sudo ovs-ofctl -O OpenFlow13 dump-flows s3
-mininet> sh sudo ovs-ofctl -O OpenFlow13 dump-flows s4
-mininet> sh sudo ovs-ofctl -O OpenFlow13 dump-flows s5
-```
-
-## Troubleshooting
-
-### Version negotiation failed
-
-If you see:
-
-```text
-version negotiation failed (we support version 0x01, peer supports version 0x04)
-```
-
-then you are trying to inspect an OpenFlow 1.3 switch with an OpenFlow 1.0 command.
-
-Use:
-
-```bash
-sh sudo ovs-ofctl -O OpenFlow13 dump-flows s1
-```
-
-### Sender starts directly on backup path
-
-If the experiment starts on `S1-S2-S3-S4` immediately:
-
-- the primary path may already be failing,
-- the sender may have detected missing ACKs very early,
-- or the topology/controller may not have stabilized yet.
-
-In that case:
-
-1. run `sudo mn -c`
-2. restart the controller
-3. restart the topology
-4. start `host_b.py` first
-5. then start `sender.py`
-6. trigger failure only after traffic is already flowing
-
-### One-shot rerouting
-
-The current design supports **one reroute event per run**. After failover, the sender remains on the backup path and does not automatically return to the primary path.
-
-### Mininet cleanup
-
-Always clean Mininet between runs:
-
-```bash
-sudo mn -c
-```
-
-## Suggested Git repository structure
-
-```text
-project/
-├── ack_listener.py
-├── host_b.py
-├── my_topology.py
-├── path_encoder.py
-├── plot_results.py
-├── README.md
-├── rerouter.py
-├── ryu_controller.py
-├── sender.py
-├── stats_utils.py
-└── topology.py
-```
-
-## Suggested `.gitignore`
-
-```gitignore
-__pycache__/
-*.pyc
-*.pyo
-*.png
-*.csv
-*.log
-```
-
-If you want to keep generated plots and CSV results in Git, remove `*.png` and `*.csv` from `.gitignore`.
-
-## Live Web Visualization (PCN_Project)
-
-`PCN_Project/index.html` is a browser-based canvas visualization of this exact
-topology. It now shows the **real** state of `sender.py` (active path,
-rerouting, packet counts) instead of a manual simulated toggle.
-
-Two new files make this work, since `sender.py` runs inside `h1`'s network
-namespace and the browser runs outside any namespace:
-
-| File | Purpose |
-|------|---------|
-| `status_publisher.py` | Used by `sender.py` to write its live state to a JSON file (shared filesystem, so it's readable outside `h1`'s namespace) |
-| `status_server.py` | Tiny stdlib HTTP server exposing that JSON file at `http://127.0.0.1:8090/status` with CORS enabled |
-
-### Run order (adds two steps to the section above)
-
-1. Start `ryu_controller.py`
-2. Start `my_topology.py`
-3. **In a new terminal (root namespace, not an `xterm`): `python3 status_server.py`**
-4. Open `xterm h1` and `xterm h2`
-5. Run `host_b.py` on `h2`
-6. Run `sender.py` on `h1`
-7. **Open `PCN_Project/index.html` in a browser on the same machine** — it polls the status server every second and shows the live primary/backup path, a "REROUTING..." indicator during failover, and running packet counters
-8. Trigger `link s5 s4 down` in the Mininet CLI and watch the page update
-9. Wait for CSV export, generate plots, clean Mininet as before
-
-If the browser shows "backend unreachable," `status_server.py` isn't running
-or `sender.py` hasn't started yet. If you open `index.html` on a different
-machine than the Mininet VM, edit the `API_BASE` constant near the top of its
-`<script>` block to point at the VM's IP.
-
-## Future improvements
-
-Ideas for extending the project:
-
-- repeated failover and recovery cycles
-- true RTT measurement between `h1` and `h2`
-- automatic failback to the primary path
-- better correlation between probes and ACKs
-- richer report generation and graphs
+Use `h1-eth1` here; that is the interface configured by the topology and used by the sender by default. [file:1][file:10]
