@@ -69,12 +69,12 @@ stats = {
 
 def build_data_packet(seq_num, path, ports):
     payload = f"type=data|seq={seq_num}|path={'-'.join(path)}".encode()
-    return encoder.encode(payload, ports, args.dst_ip, args.src_ip, dport=5000, sport=5001)
+    return encoder.encode(payload, ports, args.dst_ip, args.src_ip, seq_num, dport=5000, sport=5001)
 
 
 def build_probe_packet(probe_seq, path, ports):
     payload = f"type=probe|probe={probe_seq}|path={'-'.join(path)}".encode()
-    return encoder.encode(payload, ports, args.dst_ip, args.src_ip, dport=6000, sport=6001)
+    return encoder.encode(payload, ports, args.dst_ip, args.src_ip, probe_seq, dport=6000, sport=6001)
 
 
 def probe_loop():
