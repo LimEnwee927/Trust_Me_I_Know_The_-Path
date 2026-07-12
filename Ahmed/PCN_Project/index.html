@@ -55,6 +55,12 @@
   #btnSend:hover:not(:disabled) { background: #1a6fa3; }
   #btnSend.running { background: #e67e22; }
   #btnSend.running:hover:not(:disabled) { background: #ca6f1e; }
+  #btnSend100 { background: #8e44ad; color: white; }
+  #btnSend100:hover:not(:disabled) { background: #703688; }
+  #btnHostB { background: #16a085; color: white; }
+  #btnHostB:hover:not(:disabled) { background: #128a72; }
+  #btnHostB.running { background: #7f8c8d; }
+  #btnHostB.running:hover:not(:disabled) { background: #707b7c; }
   #status {
     font-size: 13px;
     color: #444;
@@ -63,36 +69,49 @@
     border-radius: 5px;
     border: 1px solid #ddd;
   }
-  #btnS5:disabled { opacity: 1; cursor: default; }
-  #conn {
-    font-size: 12px;
-    padding: 6px 14px;
-    border-radius: 5px;
-    border: 1px solid #ddd;
-  }
-  #conn.live    { background: #eafaf1; color: #1e8449; border-color: #a9dfbf; }
-  #conn.offline { background: #fdedec; color: #c0392b; border-color: #f5b7b1; }
-  #stats {
-    font-size: 12px;
-    color: #666;
-    margin-top: 8px;
+  #offlineBanner {
+    display: none;
+    width: 100%;
+    max-width: 1060px;
+    margin-bottom: 12px;
+    padding: 10px 16px;
+    background: #c0392b;
+    color: white;
+    font-size: 13px;
+    font-weight: bold;
+    border-radius: 6px;
+    text-align: center;
   }
 </style>
 </head>
 <body>
 
-<h2>PCN Network Topology &mdash; Live Failover Visualization</h2>
+<div id="offlineBanner"></div>
+<h2>PCN Network Topology &mdash; Failover Visualization</h2>
 <canvas id="canvas" width="1060" height="540"></canvas>
 
 <div id="controls">
-  <button id="btnS5" disabled>&#x2B07;&nbsp; s5 status</button>
-  <button id="btnSend" onclick="toggleContinuous()">&#x25B6;&nbsp; Start</button>
+  <button id="btnS5"  onclick="toggleS5()">&#x2B07;&nbsp; Bring s5 Down</button>
+  <button id="btnSend" onclick="toggleSender()">&#x25B6;&nbsp; Start</button>
+  <button id="btnSend100" onclick="send100()">&#x1F4E4;&nbsp; Send 100 pkts</button>
+  <button id="btnHostB" onclick="startHostB()">&#x1F442;&nbsp; h2 starts listening</button>
   <span id="status"></span>
-  <span id="conn">connecting&hellip;</span>
 </div>
-<div id="stats"></div>
 
 <script>
+// -- Backend endpoints ----------------------------------------------------------
+// Resolve against whatever host this page was actually loaded from, so it
+// works whether that's 127.0.0.1 or a remote box's LAN IP. Falls back to
+// 127.0.0.1 only if the page was opened as a local file (no location.hostname).
+const API_HOST = location.hostname || '127.0.0.1';
+// status_server.py (read-only telemetry from sender.py)
+const STATUS_URL  = `http://${API_HOST}:8090/status`;
+// link_control_server.py, started by my_topology.py (has the real `net` object)
+const CONTROL_URL = `http://${API_HOST}:8091/link`;
+const SENDER_URL  = `http://${API_HOST}:8091/sender`;
+const HOSTB_URL   = `http://${API_HOST}:8091/hostb`;
+const POLL_MS = 400;
+
 // -- Data ---------------------------------------------------------------------
 const W = 1060, H = 540;
 const NODE_POS = {
@@ -121,16 +140,21 @@ const SW_HALF = 27;
 const STEP    = 0.04;   // fraction per animation frame
 const LOOP_PAUSE = 600; // ms between packets in continuous mode
 
-// -- Backend connection ---------------------------------------------------------
-// status_server.py must be running on the same machine (see Ahmed/status_server.py).
-// If this page is opened on a different machine than the Mininet VM, change this.
-const API_BASE     = 'http://127.0.0.1:8090';
-const POLL_MS       = 1000;
-
 // -- State --------------------------------------------------------------------
-let s5Down      = false;   // derived from backend: true when sender.py is on the backup path
-let rerouting   = false;
-let connected   = false;
+let physicalDown = false;  // real s5-s4 link state, from link_control_server.py
+let linkPending  = false;  // waiting on a POST /link/down|up round trip
+let latestStatus = null;   // last GET /status payload from status_server.py
+let backendOffline = false;
+let everConnected  = false; // has ANY poll to either backend ever succeeded?
+const PAGE_LOAD_TIME = Date.now();
+
+let senderRunning = false; // real sender.py process state, from link_control_server.py
+let senderPending = false; // waiting on a POST /sender/start|stop round trip
+let lastError     = null;  // last error message returned by link_control_server.py
+
+let hostbRunning = false; // real host_b.py process state, from link_control_server.py
+let hostbPending = false; // waiting on a POST /hostb/start round trip
+
 let animating   = false;
 let animReq     = null;
 let continuous  = false;
@@ -140,7 +164,12 @@ const canvas = document.getElementById('canvas');
 const ctx    = canvas.getContext('2d');
 
 // -- Helpers ------------------------------------------------------------------
-function activePath() { return s5Down ? PATH_UPPER : PATH_LOWER; }
+function activePath() {
+  if (latestStatus && Array.isArray(latestStatus.current_path)) {
+    return latestStatus.current_path;
+  }
+  return PATH_LOWER;
+}
 
 function activeEdgeSet() {
   const p = activePath(), s = new Set();
@@ -170,7 +199,7 @@ function drawEdges(active) {
 
     let color, lw;
     ctx.setLineDash([]);
-    if (s5Down && s5edge) {
+    if (physicalDown && s5edge) {
       color = '#ffaaaa'; lw = 2;
       ctx.setLineDash([8, 5]);
     } else if (isAct) {
@@ -191,7 +220,7 @@ function drawEdges(active) {
     const dx = x2-x1, dy = y2-y1;
     const len = Math.hypot(dx, dy) || 1;
     const px = -dy/len * 13, py = dx/len * 13;
-    const lc = (s5Down && s5edge) ? '#aaa' : '#555';
+    const lc = (physicalDown && s5edge) ? '#aaa' : '#555';
     ctx.fillStyle = lc;
     ctx.font = '11px Helvetica, Arial';
     ctx.textAlign = 'center';
@@ -219,7 +248,7 @@ function drawNodes() {
       ctx.textBaseline = 'middle';
       ctx.fillText(name, cx, cy);
     } else {
-      const isDown  = s5Down && name === 's5';
+      const isDown  = physicalDown && name === 's5';
       const fill    = isDown ? '#ffd5d5' : '#ffffff';
       const border  = isDown ? '#c0392b' : '#2c3e50';
       const lw      = isDown ? 2.5 : 2;
@@ -279,78 +308,160 @@ function drawLegend() {
 
 // -- Controls -----------------------------------------------------------------
 function updateStatus() {
-  const path = activePath().join(' -> ');
-  let state;
-  if (rerouting)   state = 'REROUTING...  |  was: ';
-  else if (s5Down) state = 'on BACKUP path (s5 unreachable)  |  path: ';
-  else             state = 'on PRIMARY path  |  path: ';
-  document.getElementById('status').textContent = state + path;
-}
+  if (!backendOffline) everConnected = true;
+  updateOfflineBanner();
 
-function applyBackendState(data) {
-  const wasDown = s5Down;
-  s5Down    = !!data.on_backup;
-  rerouting = !!data.rerouting;
-
-  const btn = document.getElementById('btnS5');
-  if (rerouting) {
-    btn.innerHTML = '&#x21bb;&nbsp; Rerouting...';
-    btn.classList.remove('up');
-  } else if (s5Down) {
-    btn.innerHTML = '&#x2B06;&nbsp; s5 DOWN (backup active)';
-    btn.classList.add('up');
-  } else {
-    btn.innerHTML = '&#x2B07;&nbsp; s5 UP (primary active)';
-    btn.classList.remove('up');
+  const el = document.getElementById('status');
+  if (backendOffline) {
+    el.textContent = 'not connected - start status_server.py and my_topology.py';
+    return;
   }
 
+  const path = activePath().join(' -> ');
+  let text = physicalDown ? 's5-s4 link DOWN' : 's5-s4 link UP';
+  text += linkPending ? ' (sending command...)' : '';
+  text += '  |  active path: ' + path;
+
+  if (latestStatus) {
+    if (latestStatus.rerouting) text += '  |  REROUTING...';
+    else if (latestStatus.on_backup) text += '  |  on backup path';
+    if (!physicalDown && latestStatus.on_backup) {
+      text += '  (link is back up, but sender has no fail-back logic - still latched on backup)';
+    }
+    text += `  |  sent: ${latestStatus.sent_total}`;
+  }
+
+  text += '  |  sender.py: ' + (senderRunning ? 'RUNNING' : 'stopped');
+  text += senderPending ? ' (...)' : '';
+  text += '  |  host_b.py: ' + (hostbRunning ? 'RUNNING' : 'stopped');
+  text += hostbPending ? ' (...)' : '';
+  if (lastError) text += '  |  ERROR: ' + lastError;
+
+  el.textContent = text;
+}
+
+function updateOfflineBanner() {
+  const banner = document.getElementById('offlineBanner');
+  const stillStruggling = !everConnected && (Date.now() - PAGE_LOAD_TIME > 1500);
+  if (stillStruggling) {
+    banner.style.display = 'block';
+    banner.textContent =
+      `Cannot reach the backend at ${STATUS_URL} or ${CONTROL_URL} - ` +
+      `is status_server.py / my_topology.py running, and reachable from ` +
+      `this browser? (This page was loaded from host "${API_HOST}".)`;
+  } else {
+    banner.style.display = 'none';
+  }
+}
+
+function toggleS5() {
+  if (linkPending) return;
+  linkPending = true;
   updateStatus();
 
-  const statsEl = document.getElementById('stats');
-  statsEl.textContent =
-    `sent=${data.sent_total ?? '-'}  primary=${data.primary_sent ?? '-'}  ` +
-    `backup=${data.backup_sent ?? '-'}  dropped=${data.dropped_total ?? '-'}  ` +
-    `reroutes=${data.path_flap_count ?? '-'}`;
+  const goingDown = !physicalDown;
+  fetch(CONTROL_URL + (goingDown ? '/down' : '/up'), { method: 'POST' })
+    .then(res => res.json())
+    .then(data => {
+      backendOffline = false;
+      physicalDown = !data.up;
+      const btn = document.getElementById('btnS5');
+      if (physicalDown) {
+        btn.innerHTML = '&#x2B06;&nbsp; Bring s5 Up';
+        btn.classList.add('up');
+      } else {
+        btn.innerHTML = '&#x2B07;&nbsp; Bring s5 Down';
+        btn.classList.remove('up');
+      }
+    })
+    .catch(() => {
+      backendOffline = true;
+    })
+    .finally(() => {
+      linkPending = false;
+      redraw(null);
+      updateStatus();
+    });
+}
 
-  redraw(null);
+function toggleSender() {
+  if (senderPending) return;
+  senderPending = true;
+  updateStatus();
 
-  // Path changed underneath an in-flight packet: restart it on the new path.
-  if (wasDown !== s5Down && animating) {
-    cancelAnimationFrame(animReq);
-    clearTimeout(loopTimeout);
-    animating = false;
-    loopTimeout = setTimeout(() => sendPacket(), 300);
+  const starting = !senderRunning;
+  fetch(SENDER_URL + (starting ? '/start' : '/stop'), { method: 'POST' })
+    .then(res => res.json())
+    .then(data => {
+      backendOffline = false;
+      lastError = data.error || null;
+      applySenderState(data.running);
+    })
+    .catch(() => {
+      backendOffline = true;
+    })
+    .finally(() => {
+      senderPending = false;
+      updateStatus();
+    });
+}
+
+function send100() {
+  const btn = document.getElementById('btnSend100');
+  btn.disabled = true;
+  fetch(SENDER_URL + '/send100', { method: 'POST' })
+    .then(res => res.json())
+    .then(data => {
+      backendOffline = false;
+      lastError = data.error || null;
+    })
+    .catch(() => {
+      backendOffline = true;
+    })
+    .finally(() => {
+      btn.disabled = false;
+      updateStatus();
+    });
+}
+
+function startHostB() {
+  if (hostbPending) return;
+  hostbPending = true;
+  updateStatus();
+
+  fetch(HOSTB_URL + '/start', { method: 'POST' })
+    .then(res => res.json())
+    .then(data => {
+      backendOffline = false;
+      lastError = data.error || null;
+      applyHostBState(data.running);
+    })
+    .catch(() => {
+      backendOffline = true;
+    })
+    .finally(() => {
+      hostbPending = false;
+      updateStatus();
+    });
+}
+
+function applyHostBState(running) {
+  hostbRunning = running;
+  const btn = document.getElementById('btnHostB');
+  if (running) {
+    btn.innerHTML = '&#x1F442;&nbsp; h2 listening';
+    btn.classList.add('running');
+  } else {
+    btn.innerHTML = '&#x1F442;&nbsp; h2 starts listening';
+    btn.classList.remove('running');
   }
 }
 
-function setConnStatus(isLive, message) {
-  connected = isLive;
-  const el = document.getElementById('conn');
-  el.textContent = message;
-  el.classList.toggle('live', isLive);
-  el.classList.toggle('offline', !isLive);
-}
-
-async function pollStatus() {
-  try {
-    const res = await fetch(`${API_BASE}/status`, { cache: 'no-store' });
-    if (!res.ok) throw new Error('HTTP ' + res.status);
-    const data = await res.json();
-    if (data.error) {
-      setConnStatus(false, data.error);
-    } else {
-      setConnStatus(true, 'live — sender.py connected');
-      applyBackendState(data);
-    }
-  } catch (e) {
-    setConnStatus(false, 'backend unreachable — showing last known state');
-  }
-}
-
-function toggleContinuous() {
-  continuous = !continuous;
+function applySenderState(running) {
+  senderRunning = running;
+  continuous = running;
   const btn = document.getElementById('btnSend');
-  if (continuous) {
+  if (running) {
     btn.innerHTML = '&#x23F9;&nbsp; Stop';
     btn.classList.add('running');
     if (!animating) sendPacket();
@@ -395,11 +506,88 @@ function animate(waypoints, seg, t) {
   }
 }
 
+// -- Polling ------------------------------------------------------------------
+function pollStatus() {
+  fetch(STATUS_URL)
+    .then(res => res.json())
+    .then(data => {
+      if (data.error) return;
+      backendOffline = false;
+      latestStatus = data;
+      if (!animating) redraw(null);
+      updateStatus();
+    })
+    .catch(() => {
+      backendOffline = true;
+      updateStatus();
+    });
+}
+
+function pollLinkState() {
+  fetch(CONTROL_URL + '/state')
+    .then(res => res.json())
+    .then(data => {
+      backendOffline = false;
+      const changed = physicalDown !== !data.up;
+      physicalDown = !data.up;
+      if (changed) {
+        const btn = document.getElementById('btnS5');
+        if (physicalDown) {
+          btn.innerHTML = '&#x2B06;&nbsp; Bring s5 Up';
+          btn.classList.add('up');
+        } else {
+          btn.innerHTML = '&#x2B07;&nbsp; Bring s5 Down';
+          btn.classList.remove('up');
+        }
+        if (!animating) redraw(null);
+      }
+      updateStatus();
+    })
+    .catch(() => {
+      backendOffline = true;
+      updateStatus();
+    });
+}
+
+function pollSenderState() {
+  fetch(SENDER_URL + '/state')
+    .then(res => res.json())
+    .then(data => {
+      backendOffline = false;
+      if (senderRunning !== data.running) applySenderState(data.running);
+      updateStatus();
+    })
+    .catch(() => {
+      backendOffline = true;
+      updateStatus();
+    });
+}
+
+function pollHostBState() {
+  fetch(HOSTB_URL + '/state')
+    .then(res => res.json())
+    .then(data => {
+      backendOffline = false;
+      if (hostbRunning !== data.running) applyHostBState(data.running);
+      updateStatus();
+    })
+    .catch(() => {
+      backendOffline = true;
+      updateStatus();
+    });
+}
+
 // -- Init ---------------------------------------------------------------------
 updateStatus();
 redraw(null);
-pollStatus();
 setInterval(pollStatus, POLL_MS);
+setInterval(pollLinkState, POLL_MS);
+setInterval(pollSenderState, POLL_MS);
+setInterval(pollHostBState, POLL_MS);
+pollStatus();
+pollLinkState();
+pollSenderState();
+pollHostBState();
 </script>
 </body>
 </html>

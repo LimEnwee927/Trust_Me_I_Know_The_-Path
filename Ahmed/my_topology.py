@@ -3,6 +3,8 @@ from mininet.node import RemoteController, OVSSwitch
 from mininet.link import TCLink
 from mininet.cli import CLI
 
+import link_control_server
+
 
 def build_network():
     net = Mininet(controller=RemoteController, switch=OVSSwitch, link=TCLink)
@@ -46,6 +48,8 @@ def build_network():
     print("Backup path : S1-S2-S3-S4-H2 ports [2,2,2,1]")
     print("Manual failure command: link s5 s4 down")
     print("=" * 60)
+
+    link_control_server.start(net)
 
     CLI(net)
     net.stop()

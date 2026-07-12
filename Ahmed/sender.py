@@ -9,6 +9,7 @@ from path_encoder import PathEncoder
 from rerouter import Rerouter
 from ack_listener import AckListener
 from stats_utils import summarize, jitter, export_run_csv, export_timeseries_csv
+import status_publisher
 
 PING_FREQUENCY = 0
 
@@ -75,6 +76,20 @@ def build_data_packet(seq_num, path, ports):
 def build_probe_packet(probe_seq, path, ports):
     payload = f"type=probe|probe={probe_seq}|path={'-'.join(path)}".encode()
     return encoder.encode(payload, ports, args.dst_ip, args.src_ip, probe_seq, dport=6000, sport=6001)
+
+
+def status_loop():
+    dest_cfg = {"backup_path": BACKUP_PATH}
+    while not sender_done:
+        with lock:
+            flow = {
+                "current_path": current_path[:],
+                "rerouting": rerouting,
+                "reroute_done": reroute_done,
+                "path_flap_count": path_flap_count,
+            }
+        status_publisher.publish(flow, stats, dest_cfg)
+        time.sleep(0.2)
 
 
 def probe_loop():
@@ -225,7 +240,7 @@ def print_final_stats():
     print(f"send_time_jitter_s={send_jitter:.6f}")
     print(f"general_queue_wait: avg={gen_wait_summary['avg']:.6f} p95={gen_wait_summary['p95']:.6f} max={gen_wait_summary['max']:.6f}")
     print(f"reroute_affected_packets={stats['packets_affected_by_reroute']}")
-    print(f"reroute_wait: avg={reroute_wait_summary['avg']:.6f} p95={reroute_wait_summary['p95']:.6f} max={reroute_wait_summary['max']:.6f}")
+    # print(f"reroute_wait: avg={reroute_wait_summary['avg']:.6f} p95={reroute_wait_summary['p95']:.6f} max={reroute_wait_summary['max']:.6f}")
     print(f"reroute_time_s={reroute_time:.6f}" if reroute_time is not None else "reroute_time_s=None")
     print(f"recovery_time_objective_s={rto:.6f}" if rto is not None else "recovery_time_objective_s=None")
     print("=" * 72)
@@ -259,6 +274,7 @@ ack_listener.start()
 threading.Thread(target=producer_loop, daemon=True).start()
 threading.Thread(target=sender_loop, daemon=True).start()
 threading.Thread(target=probe_loop, daemon=True).start()
+threading.Thread(target=status_loop, daemon=True).start()
 
 while not sender_done:
     time.sleep(1)

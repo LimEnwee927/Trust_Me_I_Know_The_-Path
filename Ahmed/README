@@ -14,6 +14,11 @@ sudo python3 my_topology.py
 
 This creates the hosts and switches, configures `h1` and `h2`, and opens the Mininet CLI. [file:1]
 
+This also starts `link_control_server.py` on `http://127.0.0.1:8091` (in the same
+process, since it needs the live `net` object), so the GUI's "Bring s5 Down" /
+"Bring s5 Up" button can actually flip the real `s5-s4` link via
+`net.configLinkStatus()` instead of just animating locally.
+
 ### 3. Open host terminals
 
 From the Mininet CLI:
@@ -45,3 +50,31 @@ python3 sender.py --iface h1-eth1 --max-packets 1000
 ```
 
 Use `h1-eth1` here; that is the interface configured by the topology and used by the sender by default. [file:1][file:10]
+
+Alternatively, once the GUI is open (step 6), clicking **Start** does this for
+you: it opens an xterm on `h1` (same mechanism as `xterm h1` above) and runs
+`bash run_sender.sh`, which just does `python3 sender.py --iface h1-eth1`
+then drops to a shell so the window and sender output stay visible. **Stop**
+closes that window. No need to also open `h1`'s xterm by hand for this.
+
+### 6. Start the status server and open the GUI
+
+In a normal ROOT terminal (not an `xterm h1`/`xterm h2` window):
+
+```bash
+python3 status_server.py
+```
+
+It prints the URL to open, e.g. `http://10.0.0.5:8090/` - use that (not a
+local copy of `index.html`). status_server.py now serves the page itself, in
+addition to the `/status` telemetry endpoint. This matters: the page's JS
+talks to this server and to `link_control_server.py` (port 8091, started
+automatically by step 2) using whatever host the page was loaded *from* - if
+you instead open `PCN_Project/index.html` as a local file in a browser on a
+different machine than the one running these servers, every request it makes
+silently fails to connect (looks like "not connected" with nothing printed
+server-side). Loading it from the printed URL avoids that entirely.
+
+Note: `sender.py` has no fail-back logic - once it reroutes to the backup
+path it stays there even after the link is brought back up. The GUI will
+show "link is back up, but sender has no fail-back logic" in that case.
