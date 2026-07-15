@@ -96,13 +96,19 @@ def get_sender_name(ip):
 
 def handle_and_reply(pkt):
     global received, probe_received, primary_received, backup_received
-    # Only process ICMP Echo Request (type=8)
-    if pkt.haslayer(ICMP) and pkt[ICMP].type == 8:
-        payload = pkt[Raw].load.decode('utf-8')
+
+    if not pkt.haslayer(Dot1Q):
+        payload = ''
+        # pkt.show()
+        if pkt.haslayer(ICMP) and pkt[ICMP].type == 8:
+            payload = pkt[Raw].load.decode('utf-8')
+        else: payload = pkt[Raw].load.decode('utf-8')
         print(f"Receive ICMP Pkt from IP: {pkt[IP].src}, \npayload: {payload}")
         sender_name = get_sender_name(pkt[IP].src)
 
-        pkt_seq = pkt[ICMP].seq
+        pkt_seq = 0
+        if pkt.haslayer(ICMP) and pkt[ICMP].type == 8:
+            pkt_seq = pkt[ICMP].seq
         pkt_path = None
         is_probe = False
 
@@ -127,12 +133,18 @@ def handle_and_reply(pkt):
         # nest 802.1Q headers with vlan tag
         for vlan_port in return_ports:
             reply_pkt = reply_pkt / Dot1Q(vlan=vlan_port)
+        
+        if pkt.haslayer(UDP):
+            reply_pkt = (reply_pkt / 
+                        IP(src=pkt[IP].dst, dst=pkt[IP].src) / 
+                        UDP())
             
-        # Add reversed IP header and ICMP Echo Reply (type=0)
-        # Keep pkt ID and sequence same as request
-        reply_pkt = (reply_pkt / 
-                     IP(src=pkt[IP].dst, dst=pkt[IP].src) / 
-                     ICMP(type=0, id=pkt[ICMP].id, seq=pkt_seq))
+        if pkt.haslayer(ICMP) and pkt[ICMP].type == 8:
+            # Add reversed IP header and ICMP Echo Reply (type=0)
+            # Keep pkt ID and sequence same as request
+            reply_pkt = (reply_pkt / 
+                            IP(src=pkt[IP].dst, dst=pkt[IP].src) / 
+                            ICMP(type=0, id=pkt[ICMP].id, seq=pkt_seq))
         
         # Send reply
         try:
@@ -185,7 +197,7 @@ signal.signal(signal.SIGINT, hard_exit_handler)
 
 print("h2 start monitoring ping request...")
 # start monitoring icmp flow on h2-eth1
-sniff(iface=iface_name, filter="icmp", prn=handle_and_reply, store=0)
+sniff(iface=iface_name, prn=handle_and_reply, store=0)
     
 
 
